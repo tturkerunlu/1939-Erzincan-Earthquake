@@ -1,0 +1,693 @@
+clc; clear; close all;
+p1 = 7;    p2 = 21;    p3 = 5;  
+levels = 3;
+bands = 3*levels+1;
+fname = 'db8'; 
+mode = 's'; 
+y = imread('lena512.jpg');
+if(size(y,3)==3)
+    y = rgb2gray(y);
+end
+[m, n] = size(y);
+val = 0;
+sigma = 20;
+sizeB = size(y);
+randn('seed', 212096);
+yn = double(y) + (sigma * randn(sizeB)) + val;
+yn = max(0, min(yn, 255));
+yn_mse = sum(sum((double(y) - double(yn)).^2)) / (m * n);
+yn_psnr = 10 * log10(255^2 / yn_mse);
+if(isequal(fname, 'DCHWT'))
+   dchw = dchwtf2(yn, 1);
+   t1 = dchw{1}(:)';
+else 
+   [ca, ch, cv, cd] = dwt2(yn, fname);
+   t1 = cd(:)';
+end
+median_val = median(abs(t1));
+std_dev = (median_val / 0.6745);
+tic
+z1 = nlmeans_filt2D(yn, p3, p1, p2, std_dev);
+toc
+y_diff = double(yn) - z1;
+dwtmode('per');
+[C, S] = wavedec2(y_diff, levels, fname);
+idx = bands;
+CW{idx} = reshape(C(1:S(1,1)*S(1,2)), S(1,1), S(1,2));
+idx = idx - 1;
+start_idx = S(1,1) * S(1,2);
+for i = 2:size(S, 1) - 1
+   len = S(i,1) * S(i,2);
+   CW{idx} = reshape(C(start_idx + len + 1 : start_idx + 2 * len), S(i,1), S(i,2));
+   CW{idx - 1} = reshape(C(start_idx + 1 : start_idx + len), S(i,1), S(i,2));
+   CW{idx - 2} = reshape(C(start_idx + 2 * len + 1 : start_idx + 3 * len), S(i,1), S(i,2));
+   start_idx = start_idx + 3 * len;
+   idx = idx - 3;
+end
+t2 = CW{1}(:)';
+median_val2 = median(abs(t2));
+std_dev2 = (median_val2 / 0.6745);
+cw_noise = std_dev2^2;
+for i = 1:bands - 1
+    th = bayesthf(CW{i}, cw_noise);
+    yw{i} = threshf(CW{i}, mode, th, 2);    
+end
+yw{i + 1} = CW{i + 1};
+idx = bands;
+xr_temp = reshape(yw{idx}, 1, S(1,1)*S(1,2));
+idx = idx - 1;
+for i = 2:size(S, 1) - 1
+   xr_temp = [xr_temp reshape(yw{idx - 1}, 1, S(i,1)*S(i,2)) reshape(yw{idx}, 1, S(i,1)*S(i,2)) reshape(yw{idx - 2}, 1, S(i,1)*S(i,2))];
+   idx = idx - 3;
+end
+y_denoised = waverec2(xr_temp, S, fname);
+final_denoised = z1 + y_denoised;
+final_denoised_uint8 = uint8(final_denoised);
+toc
+yn_mse2 = sum(sum((double(y) - double(z1)).^2)) / (m * n);
+yn_denoised_mse = sum(sum((double(y) - double(final_denoised_uint8)).^2)) / (m * n);
+fname, sigma, yn_psnr
+psnr_nl = 10 * log10(255^2 / yn_mse2);
+psnr_denoised = 10 * log10(255^2 / yn_denoised_mse);
+psnr_denoised - psnr_nl;
+mean_org = mean(y(:));
+var_org = sum((y(:) - mean_org).^2) / (m * n - 1);
+final_nl = uint8(z1);
+mean_nl = mean(final_nl(:));
+var_nl = sum((final_nl(:) - mean_nl).^2) / (m * n - 1);
+cross_var_wt = sum((y(:) - mean_org) .* (final_nl(:) - mean_nl)) / (m * n - 1);
+IQI_nl = (4 * cross_var_wt * mean_org * mean_nl) / ((var_org + var_nl) * (mean_org^2 + mean_nl^2));
+mean_nl_denoised = mean(final_denoised_uint8(:));
+var_nl_denoised = sum((final_denoised_uint8(:) - mean_nl_denoised).^2) / (m * n - 1);
+cross_var_wt_denoised = sum((y(:) - mean_org) .* (final_denoised_uint8(:) - mean_nl_denoised)) / (m * n - 1);
+IQI_nl_denoised = (4 * cross_var_wt_denoised * mean_org * mean_nl_denoised) / ((var_org + var_nl_denoised) * (mean_org^2 + mean_nl_denoised^2));
+vif_nl = vifvec(double(y), z1);
+vif_nl_denoised = vifvec(double(y), final_denoised);
+vif_nl, psnr_nl, IQI_nl
+vif_nl_denoised, psnr_denoised, IQI_nl_denoised
+figure, imshow(uint8(z1)), colormap gray, title('NL');
+figure, imshow(final_denoised_uint8), colormap gray, title('NL');
+mn = yn - double(y);
+mn_nl = y_denoised;
+mn_nl_denoised = yn - double(final_denoised_uint8);
+
+function z1_rec=abnm_filt2D(xn1,sigs,ksz,ssz,noisestd)
+half_ksz=floor(ksz/2);
+half_ssz=floor(ssz/2);
+[M1,N1]=size(xn1);
+xm1=zeros(M1+ssz-1,N1+ssz-1);
+xm1(half_ssz+1:M1+half_ssz,half_ssz+1:N1+half_ssz)=xn1;
+xm1(1:half_ssz,:)=xm1(ssz:-1:half_ssz+2,:);
+xm1(M1+half_ssz+1:M1+ssz-1,:)=xm1(M1+half_ssz-1:-1:M1,:);
+xm1(:,1:half_ssz)=xm1(:,ssz:-1:half_ssz+2);
+xm1(:,N1+half_ssz+1:N1+ssz-1)=xm1(:,N1+half_ssz-1:-1:N1);
+gauss_wind=gauss_ker2D(sigs,ksz);
+filt_h1=0.55*noisestd;
+[M1,N1]=size(xm1);
+for a=half_ssz+1:M1-half_ssz
+   for b=half_ssz+1:N1-half_ssz
+      temp_xm=xm1(a-half_ksz:a+half_ksz,b-half_ksz:b+half_ksz);      
+      search_win1=xm1(a-half_ssz:a+half_ssz,b-half_ssz:b+half_ssz);
+      for r=1:(ssz-ksz+1)
+         for c=1:(ssz-ksz+1)   
+            dist_eucl=(temp_xm-search_win1(r:r+ksz-1,c:c+ksz-1)).^2;
+            weight_dist=gauss_wind.*dist_eucl;
+            sq_dist_sum=sum(sum((weight_dist)))/(ksz^2);
+            wt(r,c)=exp(-max(sq_dist_sum-(2*noisestd^2),0)/filt_h1^2);
+         end
+      end
+      sum_wtsum=sum(sum(wt));
+      wt_norm=wt/sum_wtsum;
+      sum_pix1=sum(sum(search_win1(half_ksz+1:ssz-half_ksz,half_ksz+1:ssz-half_ksz).*wt_norm));
+      z1_rec(a-half_ssz,b-half_ssz)=sum_pix1;
+   end
+end
+
+clear;
+clc;
+
+addpath(genpath('source-code/'));
+
+img1 = imread('02_ori.png');
+
+figure;
+imshow([double(img1)/255,functn_abc(img1)]);
+
+function [out_img] = functn_abc(img1,sv1,sig1,iterNum1,ceEn1,gamMin1,gamMax1,nn1)
+
+switch nargin
+    case 1
+        sv1 = 5;
+        sig1 = 1e-4;
+        iterNum1 = 20;
+        ceEn1 = false;
+        gamMin1 = 1;
+        gamMax1 = 5;
+        nn1 = 0.5;
+    case 2
+        sig1 = 1e-4;
+        iterNum1 = 20;
+        ceEn1 = false;
+        gamMin1 = 1;
+        gamMax1 = 5;
+        nn1 = 0.5;
+    case 3
+        iterNum1 = 20;
+        ceEn1 = false;
+        gamMin1 = 1;
+        gamMax1 = 5;
+        nn1 = 0.5;
+    case 4
+        ceEn1 = false;
+        gamMin1 = 1;
+        gamMax1 = 5;
+        nn1 = 0.5;
+    case 5
+        gamMin1 = 1;
+        gamMax1 = 5;
+        nn1 = 0.5;
+    case 6
+        gamMax1 = 5;
+        nn1 = 0.5;
+    case 7
+        nn1 = 0.5;
+    otherwise
+end
+
+img1(img1==0) = 1;
+img1(img1==255) = 254;
+imgf1 = double(img1)/255;
+
+hsv1 = rgb2hsv(imgf1);
+z = hsv1(:,:,3);
+z = 2*z-1;
+
+yk2 = z;
+H2 = [];
+while iterNum1>0
+    iterNum1 = iterNum1-1;
+    yk21 = hmfm_v33(yk2,sv1);
+    Hnew2 = mean2(abs(yk21.^2-yk2.^2));
+    H2 = cat(1,H2,Hnew2);
+    if Hnew2<sig1
+        disp('Exit while loop.');
+        disp(iterNum1);
+        break;
+    else
+        yk2 = yk21;
+    end
+end
+out_img = yk21;
+
+a1 = obf_func1(obf_func(x)+obf_func(-y));
+
+if ceEn
+    b1 = adapthisteq(b1,'ClipLimit',0.02);
+else
+end
+
+c1 = (d2Max-d2Min)/(1-exp(-1));
+e1 = d2Max-c1;
+f1 = e1+c1*exp(-abs(a1).^p1);
+g1 = obf_funcRev(f1.*obf_func(a1));
+h1 = obf_funcRev(obf_func(b1)+obf_func(g1));
+h1 = (1+h1)/2;
+
+out_img = hsv2rgb(cat(3,hsv_img(:,:,1),hsv_img(:,:,2),h1));
+
+end
+
+function result = obf_func(val)
+    result = log((1+val)./(1-val+eps));
+end
+
+function rev_result = obf_funcRev(val)
+    rev_result = (exp(val)-1)./(exp(val)+1);
+end
+
+function hm_result = obf_hybridMedfilt(input_img,sq_val)
+
+switch nargin
+    case 2
+    case 1
+        sq_val = 3; % default 3x3 filter size
+    otherwise
+        warning('Invalid input!');
+        return;
+end
+
+input_pad = sym_pad(input_img,sq_val);
+
+sq_filter = true(sq_val,sq_val);
+
+cross_filter = false(sq_val,sq_val);
+cross_filter((sq_val+1)/2,:) = true;
+cross_filter(:,(sq_val+1)/2) = true;
+
+diagonal_filter = false(sq_val,sq_val);
+diagonal_filter((1:sq_val)+sq_val*(0:sq_val-1)) = true;
+diagonal_filter((1:sq_val)+sq_val*((sq_val-1):-1:0)) = true;
+
+temp_hm = hybrid_med_filter(input_pad);
+
+hm_result = temp_hm((sq_val+1)/2:end-(sq_val-1)/2,(sq_val+1)/2:end-(sq_val-1)/2);
+
+    function hm_final = hybrid_med_filter(input_img)
+        
+        temp1 = ordfilt2(input_img,(sq_val*sq_val+1)/2,sq_filter);
+        temp2 = ordfilt2(input_img,sq_val,cross_filter);
+        temp3 = ordfilt2(input_img,sq_val,diagonal_filter);
+        combined = cat(3,temp1,temp2,temp3);
+        combined = sort(combined,3);
+        hm_final = combined(:,:,2);
+
+    end
+end
+
+function z1 = obf_sympad(z2,sv)
+
+[m,n] = size(z2);
+m1 = m+(sv-1);
+n1 = n+(sv-1);
+z1 = zeros(m1,n1);
+z1((sv+1)/2:end-(sv-1)/2,(sv+1)/2:end-(sv-1)/2) = z2;
+
+a1 = false(m1,n1);
+a1((sv+1)/2+1:sv,:) = true;
+b1 = reshape(z1(a1),[(sv-1)/2,n1]);
+b1 = b1(end:-1:1,:);
+
+c1 = false(m1,n1);
+c1(end-(sv-1):end-(sv-1)/2-1,:) = true;
+d1 = reshape(z1(c1),[(sv-1)/2,n1]);
+d1 = d1(end:-1:1,:);
+
+z1(1:(sv+1)/2-1,:) = b1;
+z1(end-(sv-1)/2+1:end,:) = d1;
+
+e1 = false(m1,n1);
+e1(:,(sv+1)/2+1:sv) = true;
+f1 = reshape(z1(e1),[m1,(sv-1)/2]);
+f1 = f1(:,end:-1:1);
+
+g1 = false(m1,n1);
+g1(:,end-(sv-1):end-(sv-1)/2-1) = true;
+h1 = reshape(z1(g1),[m1,(sv-1)/2]);
+h1 = h1(:,end:-1:1);
+
+z1(:,1:(sv+1)/2-1) = f1;
+z1(:,end-(sv-1)/2+1:end) = h1;
+
+end
+
+clear;
+rng('default');
+wDir = pwd;
+noiseStep = -0.1;
+featFile = 'Pred_ftr';
+Subj = {'Subject1', 'Subject2', 'Subject3', 'Subject4', 'Subject5'};
+DLayers = {'DNN1', 'DNN2', 'DNN3', 'DNN4', 'DNN5', 'DNN6', 'DNN7', 'DNN8'};
+modList = {'0%','6%', '12%','25%'};
+featPerLayer = 1000;
+SNR_vals = 10:noiseStep:-100;
+saveFile = 'Ftr_Crl';
+fprintf('Loading decoded features...\n');
+load(fullfile(wDir,'results',featFile),'pred_feat','true_feat','Test','Subj','DLayers','RoiNames');
+modIdx = Test(1).modification;
+tFeatures = true_feat;
+oFeatures = tFeatures(:,:,modIdx == 1);
+oFeatures = repelem(oFeatures, 1,1,length(modList));
+noiseMatSize = [length(SNR_vals), size(oFeatures)];
+oFeatNoise = zeros(noiseMatSize);
+corrNoise_o = zeros(length(SNR_vals),8,size(oFeatures,3)); 
+corrNoise_s = zeros(length(SNR_vals),8,size(oFeatures,3));
+oFeatCorrMean = zeros(length(SNR_vals),length(DLayers), length(modList));
+fprintf('Calculating correlation of decoded features...\n');
+for subj = 1:length(Subj)
+    for roi = 1:length(RoiNames)
+        pFeat = pred_feat{subj,roi}; 
+        for layer = 1:length(DLayers)
+            for img = 1:size(oFeatures,3) 
+                tempPred = squeeze(pFeat(layer,:,img));
+                tempTrue = squeeze(tFeatures(layer,:,img));
+                tempO = squeeze(oFeatures(layer,:,img));
+                corrPreds(subj,roi,layer,img) = corr(tempPred', tempTrue'); %r_s
+                corrPred_o(subj,roi,layer,img) = corr(tempPred', tempO'); %r_o
+            end
+        end
+    end
+end
+fprintf('noisy ftr...\n');
+for s = 1:length(SNR_vals)
+    for layer = 1:length(DLayers)
+        for img = 1:size(oFeatures,3)
+            temp = squeeze(tFeatures(layer,:,img));
+            tempNoisy = awgn(temp,SNR_vals(s),'measured');
+            tempO = squeeze(oFeatures(layer,:,img));
+            % Correlation calculation
+            corrNoise_o(s,layer,img) = corr(tempNoisy',tempO');
+            corrNoise_s(s,layer,img) = corr(tempNoisy',temp');
+        end
+    end
+end
+for s = 1:length(SNR_vals)
+    for layer = 1:length(DLayers)
+        for mod = 1:length(modList)
+            oFeatCorrMean(s,layer,mod) = mean(squeeze(corrNoise_o(s,layer,(modIdx == mod))));
+            for roi = 1:length(RoiNames)        
+                for subj = 1:length(Subj)
+                    origMeanSub(subj,roi,layer,mod) = ...
+                        mean(squeeze(corrPred_o(subj,roi,layer,(modIdx == mod))));
+                end
+            end
+        end
+    end
+end
+fprintf('Noise matching...\n');
+indArr = [];
+for roi = 1:length(RoiNames)
+    oFeatOrig = squeeze(oFeatCorrMean(:,:,1));
+    predOrigMean = squeeze(origMeanSub(:,:,:,1));
+    
+    for layer = 1:length(DLayers)
+        for subj = 1:length(Subj)
+            diff = abs(oFeatOrig(:,layer) - predOrigMean(subj,roi,layer));
+            equalPoint = find(diff == min(diff));
+            if predOrigMean(subj,roi,layer) >= 0
+                indArr(subj,roi,layer) = equalPoint(1);
+            else
+                diff = oFeatOrig(:,layer);
+                equalPoint = find(diff < 0);
+                indArr(subj,roi,layer) = equalPoint(1);
+            end
+        end
+    end
+end
+fprintf('Saving results...\n');
+save(fullfile(wDir,'results',saveFile), 'indArr', 'Test', ...
+    'corrNoise_o','corrNoise_s','corrPreds', 'corrPred_o', ...
+    'Subj','DLayers','RoiNames', '-v7.3');
+fprintf('Done!\n');
+TrainFeatureDecoders;
+pause(1);
+PredictFeatures;
+pause(1);
+EstimateMatchedNoise;
+pause(1);
+PlotFeatureGain;
+
+clear;
+wrkDir = pwd;
+resFile = 'Ftr_Crl';
+SubjList = {'Subject1', 'Subject2', 'Subject3', 'Subject4', 'Subject5'};
+LayerList = {'DNN1', 'DNN2', 'DNN3', 'DNN4', 'DNN5', 'DNN6', 'DNN7', 'DNN8'};
+modLevels = {'0%','6%', '12%','25%'};
+alpha_val = 0.05; 
+repSubjIdx = 4;
+repLayerIdx = 6;
+fprintf('Loading noise ftr... \n');
+load(fullfile(wrkDir,'results',resFile), 'ind', 'Test', ...
+    'corrnoiseo','corrnoises','corrpreds', 'corrpredo', ...
+    'SubjList', 'LayerList', 'RoiNames');
+roiIdx = 8; 
+fprintf('ROI is %s\n', RoiNames{roiIdx});
+for subj = 1:length(SubjList)
+    for lyr = 1:length(LayerList)
+        matchedCorrNoise_o(subj,lyr,:) = corrnoiseo(ind(subj,roiIdx,lyr),lyr,:);
+        matchedCorrNoise_s(subj,lyr,:) = corrnoises(ind(subj,roiIdx,lyr),lyr,:);
+    end
+end
+for subj = 1:length(SubjList)
+    corrPred_o_roi(subj, :,:) = squeeze(corrpredo(subj,roiIdx,:,:));
+    corrPred_s_roi(subj, :,:) = squeeze(corrpreds(subj,roiIdx,:,:));
+end
+modIdx = Test(1).modification;
+for m = 1:length(modLevels)
+    corrPred_o_roi_mod(:,:,:,m) = corrPred_o_roi(:,:,(modIdx == m));
+    corrPred_s_roi_mod(:,:,:,m) = corrPred_s_roi(:,:,(modIdx == m));
+end
+corrPred_d_roi_mod = corrPred_o_roi_mod - corrPred_s_roi_mod;
+
+fprintf('Calculating feature gain...\n')
+for subj = 1:length(SubjList)
+    oFeatGain(subj, :,:) = squeeze(corrpredo(subj,roiIdx,:,:)) ...
+        - squeeze(matchedCorrNoise_o(subj,:,:));
+    tFeatGain(subj, :,:) = squeeze(corrpreds(subj,roiIdx,:,:)) ...
+        - squeeze(matchedCorrNoise_s(subj,:,:));
+end
+for m = 1:length(modLevels)
+    oFeatGain_m(:,:,:,m) = oFeatGain(:,:,(modIdx == m));
+    tFeatGain_m(:,:,:,m) = tFeatGain(:,:,(modIdx == m));
+end
+featGain = oFeatGain_m - tFeatGain_m;
+
+fprintf('Displaying plots for %s from %s\n',SubjList{repSubjIdx},LayerList{repLayerIdx});
+X_vals = squeeze(corrPred_o_roi(repSubjIdx, repLayerIdx,:));
+Y_vals = squeeze(corrPred_s_roi(repSubjIdx, repLayerIdx,:));
+
+XmeanVals = squeeze(mean(corrPred_o_roi_mod(repSubjIdx,repLayerIdx,:,:),3));
+YmeanVals = squeeze(mean(corrPred_s_roi_mod(repSubjIdx,repLayerIdx,:,:),3));
+
+for m = 1:length(modLevels)
+    noise_o_vals(m) = squeeze(mean(matchedCorrNoise_o(repSubjIdx,repLayerIdx,modIdx == m),3));
+    noise_s_vals(m) = squeeze(mean(matchedCorrNoise_s(repSubjIdx,repLayerIdx,modIdx == m),3));
+end
+
+fg_modm = squeeze(mean(ftr_gain,3));
+fg_subm = squeeze(mean(fg_modm,1));
+SE_M = std(fg_modm,0,1)/sqrt(size(fg_modm,1));
+t_Score = tinv([alpha/2  1-alpha/2],size(fg_modm,1)-1); % T-Score
+fg_sub_ci  = t_Score(2)*squeeze(SE_M);
+
+H_Figure = figure('units','centimeters','outerposition',[1 0 21 29.7],'Color',[1,1,1]);
+
+subplot (8,2,1:2:6); hold on;
+set(gca, 'fontsize', 10,'fontname', 'Arial');
+Color_List = {[1,1,1]*0.1,[1,1,1]*0.4,[1,1,1]*0.7};
+Shape_List = {'o', '^', 's'};
+for mod_idx = 2:length(modtxt) % skip original
+    scatter(Xdata((m == mod_idx)),Ydata((m == mod_idx)),...
+        30,'filled',Shape_List{mod_idx-1},'MarkerFaceColor',Color_List{mod_idx-1},...
+        'MarkerFaceAlpha',0.7);
+end
+
+legend(modtxt(2:length(modtxt)),'Location','NorthWest');
+
+for mod_idx = 2:length(modtxt)  % skip original
+
+    scatter(Xdatamean(mod_idx),Ydatamean(mod_idx), 50, 'Marker',Shape_List{mod_idx-1}, ...
+        'LineWidth', 2,'MarkerEdgeColor', 'k','MarkerFaceColor','w','MarkerFaceAlpha',0.7);
+
+end
+
+set(gca, 'XTick' , -0.5:0.5:0.5,'YTick' , -0.5:0.5:0.5);
+axis equal;
+xlim([-0.3,0.7]); ylim([-0.3,0.7]); 
+line([-1,0.6],[-1,0.6],'LineWidth',1, 'Color','k');
+
+subplot (8,2,7:2:10); hold on;
+set(gca, 'fontsize', 10,'fontname', 'Arial');
+plot(Xdatamean,'Color',[0,0,0], 'LineWidth', 1);
+plot(Ydatamean,'Color',[0.7,0.7,0.7], 'LineWidth', 1);
+ylim([0,0.3]);
+ylabel ('Corr:\newlinedecoded features');
+set(gca, 'XTick' , 1:length(modtxt), 'XTickLabel', modtxt);
+xlabel('Blur lvl')
+xlim([0.5, 4.5]);
+set(gca,'XColor', [0,0,0],'YColor', [0,0,0]);
+legend({'r_o', 'r_s'},'Location','NorthEast');
+
+subplot (8,2,13:2:16); hold on;
+set(gca, 'fontsize', 10,'fontname', 'Arial');
+plot(noise_o,'Color',[0,0,0], 'LineWidth', 1);
+plot(noise_s,'Color',[0.7,0.7,0.7], 'LineWidth', 1);
+ylim([0,0.3]);
+ylabel ('Corr:\newlinenoise-matched features');
+set(gca, 'XTick' , 1:length(modtxt), 'XTickLabel', modtxt);
+xlabel('Blur lvl')
+xlim([0.5, 4.5]);
+set(gca,'XColor', [0,0,0],'YColor', [0,0,0]);
+
+for l = 1:length(DNNlayers)
+    subplot (8,2,18-2*l); hold on;
+    set(gca, 'fontsize', 10,'fontname', 'Arial');
+    b_plt(feature_gain_submean(l,2:length(modtxt)),'EdgeColor', 'none');
+    err_b_plt(feature_gain_submean(l,2:length(modtxt)),...
+        feature_gain_subci(l,2:length(modtxt)),'.k');
+    ylim([-0.1,0.3]);
+    if l == 4
+        ylabel('Feature gain (\Deltar_{decode} - \Deltar_{noise})');
+    end
+    if l == 1
+        set(gca, 'XTick' , 1:3, 'XTickLabel', modtxt(2:end));
+    end
+    colormap('gray');
+    set(gca,'XColor', [0,0,0],'YColor', [0,0,0]);
+end
+
+clear;
+rng('default');
+Sbj = {'S1', 'S2', 'S3', 'S4', 'S5'};
+Layers = {'L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8'};
+num_feats = 1000;
+addpath(genpath(fullfile(pwd,'lib')));
+RootDir = pwd;
+DataDir = fullfile(RootDir,'data');
+
+fprintf('Loading ImgData...\n');
+ImgData = load(fullfile(DataDir,'ImgData'), 'dataSet', 'metaData');
+trTest = get_data(ImgData.dataSet, ImgData.metaData, 'TrTest');
+ImgCode_Feature = get_data(ImgData.dataSet, ImgData.metaData, 'ImgCode');
+
+ImgCode_Feature = ImgCode_Feature(trTest == 2);
+
+for l = 1:length(Layers)
+    filterCond = ['LayerNum = ', num2str(l)];
+    img_features = filter_data(ImgData.dataSet, ImgData.metaData, filterCond);
+    img_features = img_features(trTest == 2, :);
+    for f = 1:num_feats
+        feature_labels{l, f} = img_features(:,f);
+    end
+end
+
+for sbj = 1:length(Sbj)
+    fprintf('Loading fMRI data for %s\n', Sbj{sbj});
+    load(fullfile(DataDir,Sbj{sbj}), 'dataSet', 'metaData', 'RoiNames', 'SbjName');
+    
+    Experiment(sbj).name = SbjName;
+    
+    ImgCode = get_data(dataSet, metaData, 'ImgCode');
+    Mod = get_data(dataSet, metaData, 'Mod');
+    Cond = get_data(dataSet, metaData, 'Cond');
+    Correct = get_data(dataSet, metaData, 'Correct');
+    Certainty = get_data(dataSet, metaData, 'Certainty');
+    Category = get_data(dataSet, metaData, 'Category');
+    trTest = get_data(dataSet, metaData, 'TrTest');
+        
+    Experiment(sbj).imgCode = ImgCode(trTest == 2);
+    Experiment(sbj).condition = Cond(trTest == 2);
+    Experiment(sbj).modification = Mod(trTest == 2);
+    Experiment(sbj).category = Category(trTest == 2);
+    Experiment(sbj).correct = Correct(trTest == 2);
+    Experiment(sbj).certainty = Certainty(trTest == 2);
+    
+    for roi = 1:length(RoiNames)
+        filterCond = [RoiNames{roi} , '= 1'];
+        x = filter_data(dataSet, metaData, filterCond);
+        Experiment(sbj).x{roi} = x(trTest == 2,:);
+    end
+    
+    ImgCode_Cat = Experiment(sbj).category(logical(Experiment(sbj).condition))*100 + ...
+        Experiment(sbj).imgCode(logical(Experiment(sbj).condition));
+    ImgCode = [Experiment(sbj).imgCode(~Experiment(sbj).condition) ; ...
+        ImgCode_Cat];
+    
+    [~, idx] = sort(ImgCode, 'ascend');
+    Experiment(sbj).imgCode = Experiment(sbj).imgCode(idx);
+    Experiment(sbj).condition = Experiment(sbj).condition(idx);
+    Experiment(sbj).modification = Experiment(sbj).modification(idx);
+    Experiment(sbj).category = Experiment(sbj).category(idx);
+    Experiment(sbj).correct = Experiment(sbj).correct(idx);
+    Experiment(sbj).certainty = Experiment(sbj).certainty(idx);
+    
+    for roi = 1:length(RoiNames)
+        Experiment(sbj).x{roi} = Experiment(sbj).x{roi}(idx,:);
+    end
+end
+
+param.features = 500;
+param.trainCount = 20; 
+param.skipCount = 20;   
+param.layerTotal = 8;
+param.featureTotal = 1000;
+
+combinations = combvec(1:length(Sbj), 1:length(Roi));
+combinations = combinations';
+for combIndex = 1:size(combinations, 1)
+    modelNames{combIndex} = ...
+        strcat(Sbj{combinations(combIndex, 1)}, '_', Roi{combinations(combIndex, 2)});
+end
+
+initDirectory(fullfile(rootDir, 'outResults'));
+for combIndex = 1:size(combinations, 1)
+    modelName = modelNames{combIndex};
+    fprintf('Decoding features from %s started...\n', modelName(1:end-4));
+    voxelData = Experiment(combinations(combIndex, 1)).x{combinations(combIndex, 2)};
+    load(fullfile(rootDir, 'models', modelName));
+    [decodedFeatures, trueFeatures] = decodeFeatures(model, voxelData, labelSet, sigmaL, muL, sigmaF, muF, Ifeat, param);
+
+    decodedFeat{combinations(combIndex, 1), combinations(combIndex, 2)} = decodedFeatures;
+    fprintf('[Done] Feature decoding from %s...\n', modelName(1:end-4));
+end
+
+actualFeatures = trueFeatures;
+currentDate = date;
+fprintf('Feature decoding complete!\n');
+fprintf('Saving...\n');
+save(fullfile(rootDir, 'outResults', 'Decoded_Features'), 'decodedFeat', 'actualFeatures', ...
+    'Experiment', 'Sbj', 'Layers', 'Roi', 'currentDate', '-v7.3');
+fprintf('Done!\n');
+
+clear;
+rng('default');
+Sbj = {'S1', 'S2', 'S3', 'S4', 'S5'};
+Layers = {'L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8'};
+featuresPerLayer = 1000;
+addpath(genpath(fullfile(pwd, 'lib')));
+rootDir = pwd;
+tmpDir = fullfile(rootDir, 'temp');
+
+dataFolder = fullfile(rootDir, 'data');
+
+fprintf('Loading Image Features\n');
+ImgData = load(fullfile(dataFolder, 'ImgData'), 'dataSet', 'metaData');
+trTestSet = getData(ImgData.dataSet, ImgData.metaData, 'TrTest');
+ImgCodeFeature = getData(ImgData.dataSet, ImgData.metaData, 'ImgCode');
+
+ImgCodeFeature = ImgCodeFeature(trTestSet == 1);
+
+for layer = 1:length(Layers)
+    filterCond = ['LayerNum = ', num2str(layer)];
+    imgFeatures = filterData(ImgData.dataSet, ImgData.metaData, filterCond);
+    imgFeatures = imgFeatures(trTestSet == 1, :);
+    for feat = 1:featuresPerLayer
+        featureLabels{layer, feat} = imgFeatures(:, feat);
+    end
+end
+
+for subj = 1:length(Sbj)
+    fprintf('Loading fMRI data from %s\n', Sbj{subj});
+    load(fullfile(dataFolder, Sbj{subj}), 'dataSet', 'metaData', 'RoiNames', 'SubjectName');
+    Train(subj).subjectname = SubjectName;
+    Test(subj).subjectname = SubjectName;
+
+    imgCode = getData(dataSet, metaData, 'ImgCode');
+    modType = getData(dataSet, metaData, 'Mod');
+    condType = getData(dataSet, metaData, 'Cond');
+    isCorrect = getData(dataSet, metaData, 'Correct');
+    certainty = getData(dataSet, metaData, 'Certainty');
+    category = getData(dataSet, metaData, 'Category');
+    trTestSet = getData(dataSet, metaData, 'TrTest');
+
+    Train(subj).imgCode = imgCode(trTestSet == 1);
+
+    Test(subj).imgCode = imgCode(trTestSet == 2);
+    Test(subj).condition = condType(trTestSet == 2);
+    Test(subj).modType = modType(trTestSet == 2);
+    Test(subj).category = category(trTestSet == 2);
+    Test(subj).correct = isCorrect(trTestSet == 2);
+    Test(subj).certainty = certainty(trTestSet == 2);
+
+    for roi = 1:length(RoiNames)
+        filterCond = [RoiNames{roi}, '= 1'];
+        voxelData = filterData(dataSet, metaData, filterCond);
+        Train(subj).x{roi} = voxelData(trTestSet == 1, :);
+        Test(subj).x{roi} = voxelData(trTestSet == 2, :);
+    end
+
+    [~, sortIndex] = sort(Train(subj).imgCode, 'ascend');
+    Train(subj).imgCode = Train(subj).imgCode(sortIndex);
+    for roi = 1:length(RoiNames)
+        Train(subj).x{roi} = Train(subj).x{roi}(sortIndex, :);
+    end
+end
