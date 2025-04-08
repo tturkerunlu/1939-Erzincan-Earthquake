@@ -94,7 +94,6 @@ figure,imshow(nl_mnt8),colormap gray,title('NL');
 mn=xn-double(x);
 mn_nl=yd;
 mn_nl_mnt=xn-double(nl_mnt8);
-
 function im_rec=nlmeans_filt2D(xn,sigmas,ksize,ssize,noise_std)
 half_ksize=floor(ksize/2);
 half_ssize=floor(ssize/2);
