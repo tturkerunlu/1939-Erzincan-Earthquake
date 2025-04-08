@@ -127,7 +127,6 @@ for ii=half_ssize+1:M-half_ssize
    end
 end
 
-
 clear;
 rng('default');
 workDir = pwd;
@@ -439,8 +438,6 @@ for combsr = 1:size(subroicomb,1)
     
     modelnames{combsr} = ...
         strcat(Subjects{subroicomb(combsr,1)}, '_', RoiNames{subroicomb(combsr,2)}, '.mat');
-
-    
 end
 
 setupdir(fullfile(workDir,'results'));
@@ -453,9 +450,9 @@ for combsr = 1:size(subroicomb,1)
 
     pred_feat{subroicomb(combsr,1),subroicomb(combsr,2)} = predictedf;
     
-    fprintf('[Done] Feature decodeing from %s...\n', analysisName(1:end-4));
-        
+    fprintf('[Done] Feature decodeing from %s...\n', analysisName(1:end-4));   
 end
+
 true_feat =   truef;
 DateCreated = date;
 fprintf('Feature decodeing done!\n');
