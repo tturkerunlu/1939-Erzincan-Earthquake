@@ -128,6 +128,186 @@ for ii=half_ssize+1:M-half_ssize
 end
 
 clear;
+clc;
+
+addpath(genpath('source-code/'));
+
+img = imread('02_ori.png');
+
+figure;
+imshow([double(img)/255,NUM(img)]);
+
+function [oimgf] = NUM(img,sv,sigma,iterNum,ceEn,gammaMin,gammaMax,n)
+
+switch nargin
+    case 1
+        sv = 5;
+        sigma = 1e-4;
+        iterNum = 20;
+        ceEn = false;
+        gammaMin = 1;
+        gammaMax = 5;
+        n = 0.5;
+    case 2
+        sigma = 1e-4;
+        iterNum = 20;
+        ceEn = false;
+        gammaMin = 1;
+        gammaMax = 5;
+        n = 0.5;
+    case 3
+        iterNum = 20;
+        ceEn = false;
+        gammaMin = 1;
+        gammaMax = 5;
+        n = 0.5;
+    case 4
+        ceEn = false;
+        gammaMin = 1;
+        gammaMax = 5;
+        n = 0.5;
+    case 5
+        gammaMin = 1;
+        gammaMax = 5;
+        n = 0.5;
+    case 6
+        gammaMax = 5;
+        n = 0.5;
+    case 7
+        n = 0.5;
+    otherwise
+end
+
+img(img==0) = 1;
+img(img==255) = 254;
+imgf = double(img)/255;
+
+hsv = rgb2hsv(imgf);
+x = hsv(:,:,3);
+x = 2*x-1;
+
+yk = x;
+H = [];
+while iterNum>0
+    iterNum = iterNum-1;
+    yk1 = hmfm_v33(yk,sv);
+    Hnew = mean2(abs(yk1.^2-yk.^2));
+    H = cat(1,H,Hnew);
+    if Hnew<sigma
+        disp('Terminate while loop.');
+        disp(iterNum);
+        break;
+    else
+        yk = yk1;
+    end
+end
+y = yk1;
+
+% detail signal
+d = funcRev(func(x)+func(-y));
+
+if ceEn
+    y = adapthisteq(y,'ClipLimit',0.02);
+else
+end
+
+beta = (gammaMax-gammaMin)/(1-exp(-1));
+alpha = gammaMax-beta;
+adaptGamma = alpha+beta*exp(-abs(d).^n);
+adaptDw = funcRev(adaptGamma.*func(d));
+z2 = funcRev(func(y)+func(adaptDw));
+z2 = (1+z2)/2;
+
+oimgf = hsv2rgb(cat(3,hsv(:,:,1),hsv(:,:,2),z2));
+
+end
+
+function y = func(x)
+    y = log((1+x)./(1-x+eps));
+end
+
+function x = funcRev(y)
+    x = (exp(y)-1)./(exp(y)+1);
+end
+
+function hm = hmfm_v33(input,sv)
+
+switch nargin
+    case 2
+    case 1
+        sv = 3; % default 3x3
+    otherwise
+        warning('Please check input arguments!');
+        return;
+end
+
+input_pad = sympad(input,sv);
+
+square = true(sv,sv);
+
+cross = false(sv,sv);
+cross((sv+1)/2,:) = true;
+cross(:,(sv+1)/2) = true;
+
+diag = false(sv,sv);
+diag((1:sv)+sv*(0:sv-1)) = true;
+diag((1:sv)+sv*((sv-1):-1:0)) = true;
+
+hmtemp = hybridMedfilt(input_pad);
+
+hm = hmtemp((sv+1)/2:end-(sv-1)/2,(sv+1)/2:end-(sv-1)/2);
+
+    % Hybrid median filter
+    function hm = hybridMedfilt(inImg)
+        
+        % Filtering
+        hm1 = ordfilt2(inImg,(sv*sv+1)/2,square);
+        hm2 = ordfilt2(inImg,sv,cross);
+        hm3 = ordfilt2(inImg,sv,diag);
+        hm4 = cat(3,hm1,hm2,hm3);
+        hm4 = sort(hm4,3);
+        hm = hm4(:,:,2);
+
+    end
+end
+
+function inpad = sympad(in,sv)
+
+[y,x] = size(in);
+ypad = y+(sv-1);
+xpad = x+(sv-1);
+inpad = zeros(ypad,xpad);
+inpad((sv+1)/2:end-(sv-1)/2,(sv+1)/2:end-(sv-1)/2) = in;
+
+upmask = false(ypad,xpad);
+upmask((sv+1)/2+1:sv,:) = true;
+uppad = reshape(inpad(upmask),[(sv-1)/2,xpad]);
+uppad = uppad(end:-1:1,:);
+
+lowmask = false(ypad,xpad);
+lowmask(end-(sv-1):end-(sv-1)/2-1,:) = true;
+lowpad = reshape(inpad(lowmask),[(sv-1)/2,xpad]);
+lowpad = lowpad(end:-1:1,:);
+
+inpad(1:(sv+1)/2-1,:) = uppad;
+inpad(end-(sv-1)/2+1:end,:) = lowpad;
+
+leftmask = false(ypad,xpad);
+leftmask(:,(sv+1)/2+1:sv) = true;
+leftpad = reshape(inpad(leftmask),[ypad,(sv-1)/2]);
+leftpad = leftpad(:,end:-1:1);
+
+rightmask = false(ypad,xpad);
+rightmask(:,end-(sv-1):end-(sv-1)/2-1) = true;
+rightpad = reshape(inpad(rightmask),[ypad,(sv-1)/2]);
+rightpad = rightpad(:,end:-1:1);
+
+inpad(:,1:(sv+1)/2-1) = leftpad;
+inpad(:,end-(sv-1)/2+1:end) = rightpad;
+
+end
+
+clear;
 rng('default');
 workDir = pwd;
 noisestep = -0.1; %to adjust resolution of noise matching
@@ -438,6 +618,8 @@ for combsr = 1:size(subroicomb,1)
     
     modelnames{combsr} = ...
         strcat(Subjects{subroicomb(combsr,1)}, '_', RoiNames{subroicomb(combsr,2)}, '.mat');
+
+    
 end
 
 setupdir(fullfile(workDir,'results'));
@@ -450,9 +632,9 @@ for combsr = 1:size(subroicomb,1)
 
     pred_feat{subroicomb(combsr,1),subroicomb(combsr,2)} = predictedf;
     
-    fprintf('[Done] Feature decodeing from %s...\n', analysisName(1:end-4));   
+    fprintf('[Done] Feature decodeing from %s...\n', analysisName(1:end-4));
+        
 end
-
 true_feat =   truef;
 DateCreated = date;
 fprintf('Feature decodeing done!\n');
@@ -578,4 +760,3 @@ for combsr = 1:size(subroicomb,1)
     fprintf('Decoder %s training finished\n', analysisName(1:end-4));
     unlockcomput(analysisName, lockDir);
 end
-fprintf('Decoders training finished!\n');
