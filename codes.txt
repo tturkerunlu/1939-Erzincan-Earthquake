@@ -94,6 +94,7 @@ figure,imshow(nl_mnt8),colormap gray,title('NL');
 mn=xn-double(x);
 mn_nl=yd;
 mn_nl_mnt=xn-double(nl_mnt8);
+
 function im_rec=nlmeans_filt2D(xn,sigmas,ksize,ssize,noise_std)
 half_ksize=floor(ksize/2);
 half_ssize=floor(ssize/2);
@@ -125,3 +126,459 @@ for ii=half_ssize+1:M-half_ssize
       im_rec(ii-half_ssize,jj-half_ssize)=sum_pix;
    end
 end
+
+
+clear;
+rng('default');
+workDir = pwd;
+noisestep = -0.1; %to adjust resolution of noise matching
+features_file = 'Predicted_features.mat';
+Subjects = {'Subject1', 'Subject2', 'Subject3', 'Subject4', 'Subject5'};
+DNNlayers = {'DNN1', 'DNN2', 'DNN3', 'DNN4', 'DNN5', 'DNN6', 'DNN7', 'DNN8'};
+modtxt = {'0%','6%', '12%','25%'};
+feat_per_layer = 1000;
+SNR = 10:noisestep:-100;
+saveFileName = 'Feature_Correlation.mat';
+fprintf('Loading decoded features...\n');
+load(fullfile(workDir,'results',features_file),'pred_feat','true_feat',...
+    'Test', 'Subjects','DNNlayers','RoiNames');
+m = Test(1).modification;
+tfeat = true_feat;
+ofeat = tfeat(:,:,m == 1);
+ofeat = repelem(ofeat, 1,1,length(modtxt));
+noised_matsize = [length(SNR), size(ofeat)];
+ofeat_noise = zeros(noised_matsize);
+corrnoiseo = zeros(length(SNR),8,size(ofeat,3)); 
+corrnoises = zeros(length(SNR),8,size(ofeat,3));
+ofeatcorrmean = zeros(length(SNR),length(DNNlayers), length(modtxt));
+fprintf('Calculating correlation of decoded features...\n');
+for subject = 1:length(Subjects)
+    for roi = 1:length(RoiNames)
+        pfeat = pred_feat{subject,roi}; 
+        for layer = 1:length(DNNlayers)
+            for img = 1:size(ofeat,3) 
+                tempp = squeeze(pfeat(layer,:,img));
+                tempt = squeeze(tfeat(layer,:,img));
+                tempo = squeeze(ofeat(layer,:,img));
+                corrpreds(subject,roi,layer,img) = corr(tempp', tempt'); %r_s
+                corrpredo(subject,roi,layer,img) = corr(tempp', tempo'); %r_o
+            end
+        end
+    end
+end
+fprintf('Creating noisy features...\n');
+for s = 1:length(SNR)
+    for layer = 1:length(DNNlayers)
+        for img = 1:size(ofeat,3)
+            temp = squeeze(tfeat(layer,:,img));
+            temp1 = awgn(temp,SNR(s),'measured');
+            tempo = squeeze(ofeat(layer,:,img));
+            %corrlation calculation
+            corrnoiseo(s,layer,img) = corr(temp1',tempo');
+            corrnoises(s,layer,img) = corr(temp1',temp');
+        end
+    end
+end
+for s = 1:(length(SNR))
+    for layer = 1:length(DNNlayers)
+        for mod = 1:length(modtxt)
+            ofeatcorrmean(s,layer,mod) = mean(squeeze(corrnoiseo(s,layer,(m == mod))));
+            for roi = 1:length(RoiNames)        
+                for subject = 1:length(Subjects)
+                    origmean_sub(subject,roi,layer,mod) = ...
+                        mean(squeeze(corrpredo(subject,roi,layer,(m == mod))));
+                end
+            
+            end
+           
+        end
+    end
+end
+fprintf('Noise matching...\n');
+ind = [];
+for roi = 1:length(RoiNames)
+    ofeat_orig = squeeze(ofeatcorrmean(:,:,1));
+    pred_orig_mean = squeeze(origmean_sub(:,:,:,1));
+    
+    for layer = 1:length(DNNlayers)
+        for subject = 1:length(Subjects)
+            Diff = abs(ofeat_orig(:,layer) - pred_orig_mean(subject,roi,layer));
+            equal_pt = find(Diff == min(Diff));
+            if pred_orig_mean(subject,roi,layer) >= 0
+                ind(subject,roi,layer) = equal_pt(1);
+            else
+                Diff = ofeat_orig(:,layer);
+                equal_pt = find(Diff < 0);
+                ind(subject,roi,layer) = equal_pt(1);
+            end
+        end
+    end
+end
+fprintf('Saving results...\n');
+save(fullfile(workDir,'results',saveFileName), 'ind', 'Test', ...
+    'corrnoiseo','corrnoises','corrpreds', 'corrpredo', ...
+    'Subjects','DNNlayers','RoiNames', '-v7.3');
+fprintf('Done!\n');
+TrainFeatureDecoders;
+pause(1);
+PredictFeatures;
+pause(1);
+EstimateMatchedNoise;
+pause(1);
+PlotFeatureGain;
+
+clear;
+workDir = pwd;
+results_file = 'Feature_Correlation.mat';
+Subjects = {'Subject1', 'Subject2', 'Subject3', 'Subject4', 'Subject5'};
+DNNlayers = {'DNN1', 'DNN2', 'DNN3', 'DNN4', 'DNN5', 'DNN6', 'DNN7', 'DNN8'};
+modtxt = {'0%','6%', '12%','25%'}; %different blur levels
+alpha = 0.05; 
+rep_subject = 4;
+rep_layer   = 6;
+fprintf('Loading noise matched features... \n');
+load(fullfile(workDir,'results',results_file), 'ind', 'Test', ...
+    'corrnoiseo','corrnoises','corrpreds', 'corrpredo',...
+    'Subjects','DNNlayers','RoiNames');
+roi = 8; 
+fprintf('ROI is %s\n', RoiNames{roi});
+for subject = 1:length(Subjects)
+    for layer = 1:length(DNNlayers)
+        matched_corrnoiseo(subject,layer,:) = corrnoiseo(ind(subject,roi,layer),layer,:);
+        matched_corrnoises(subject,layer,:) = corrnoises(ind(subject,roi,layer),layer,:);
+    end
+end
+for subject = 1:length(Subjects)
+    corrpredo_roi(subject, :,:) = squeeze(corrpredo(subject,roi,:,:));
+    corrpreds_roi(subject, :,:) = squeeze(corrpreds(subject,roi,:,:));
+end
+m = Test(1).modification;
+for mod = 1:length(modtxt)
+    corrpredo_roi_mod(:,:,:,mod) = corrpredo_roi(:,:,(m == mod));
+    corrpreds_roi_mod(:,:,:,mod) = corrpreds_roi(:,:,(m == mod));
+end
+corrpredd_roi_mod = corrpredo_roi_mod - corrpreds_roi_mod;
+
+fprintf('Calculating feature gain...\n')
+for subject = 1:length(Subjects)
+    ofeat_gain(subject, :,:) = squeeze(corrpredo(subject,roi,:,:))...
+        - squeeze(matched_corrnoiseo(subject,:,:));
+    tfeat_gain(subject, :,:) = squeeze(corrpreds(subject,roi,:,:))...
+        - squeeze(matched_corrnoises(subject,:,:));
+end
+for mod = 1:length(modtxt)
+    ofeat_gain_m(:,:,:,mod) = ofeat_gain(:,:,(m == mod));
+    tfeat_gain_m(:,:,:,mod) = tfeat_gain(:,:,(m == mod));
+end
+feature_gain = ofeat_gain_m - tfeat_gain_m;
+
+fprintf('Displaying plots for %s from %s\n',Subjects{rep_subject},DNNlayers{rep_layer});
+Xdata = squeeze(corrpredo_roi(rep_subject, rep_layer,:));
+Ydata = squeeze(corrpreds_roi(rep_subject, rep_layer,:));
+
+Xdatamean = squeeze(mean(corrpredo_roi_mod(rep_subject,rep_layer,:,:),3));
+Ydatamean = squeeze(mean(corrpreds_roi_mod(rep_subject,rep_layer,:,:),3));
+
+for mod = 1:length(modtxt)
+    noise_o(mod) = squeeze(mean(matched_corrnoiseo(rep_subject,rep_layer,m == mod),3));
+    noise_s(mod) = squeeze(mean(matched_corrnoises(rep_subject,rep_layer,m == mod),3));
+end
+
+feature_gain_modmean = squeeze(mean(feature_gain,3));
+feature_gain_submean = squeeze(mean(feature_gain_modmean,1));
+SEM = std(feature_gain_modmean,0,1)/sqrt(size(feature_gain_modmean,1)); % Standard Error
+ts = tinv([alpha/2  1-alpha/2],size(feature_gain_modmean,1)-1); % T-Score
+feature_gain_subci  = ts(2)*squeeze(SEM);
+
+HH = figure('units','centimeters','outerposition',[1 0 21 29.7],'Color',[1,1,1]);
+
+subplot (8,2,1:2:6); hold on;
+set(gca, 'fontsize', 10,'fontname', 'Arial');
+colors = {[1,1,1]*0.1,[1,1,1]*0.4,[1,1,1]*0.7};
+markershapes = {'o', '^', 's'};
+for mod = 2:length(modtxt) % skip original
+    scatter(Xdata((m == mod)),Ydata((m == mod)),...
+        30,'filled',markershapes{mod-1},'MarkerFaceColor',colors{mod-1},...
+        'MarkerFaceAlpha',0.7);
+end
+
+legend(modtxt(2:length(modtxt)),'Location','NorthWest');
+
+for mod = 2:length(modtxt)  % skip original
+
+    scatter(Xdatamean(mod),Ydatamean(mod), 50, 'Marker',markershapes{mod-1}, ...
+        'LineWidth', 2,'MarkerEdgeColor', 'k','MarkerFaceColor','w','MarkerFaceAlpha',0.7);
+
+end
+
+set(gca, 'XTick' , -0.5:0.5:0.5,'YTick' , -0.5:0.5:0.5);
+axis equal;
+xlim([-0.3,0.7]); ylim([-0.3,0.7]); 
+line([-1,0.6],[-1,0.6],'LineWidth',1, 'Color','k');
+
+subplot (8,2,7:2:10); hold on;
+set(gca, 'fontsize', 10,'fontname', 'Arial');
+plot(Xdatamean,'Color',[0,0,0], 'LineWidth', 1);
+plot(Ydatamean,'Color',[0.7,0.7,0.7], 'LineWidth', 1);
+ylim([0,0.3]);
+ylabel ('Correlation:\newlinedecoded features');
+set(gca, 'XTick' , 1:length(modtxt), 'XTickLabel', modtxt);
+xlabel('Blur level')
+xlim([0.5, 4.5]);
+set(gca,'XColor', [0,0,0],'YColor', [0,0,0]);
+legend({'r_o', 'r_s'},'Location','NorthEast');
+
+subplot (8,2,13:2:16); hold on;
+set(gca, 'fontsize', 10,'fontname', 'Arial');
+plot(noise_o,'Color',[0,0,0], 'LineWidth', 1);
+plot(noise_s,'Color',[0.7,0.7,0.7], 'LineWidth', 1);
+ylim([0,0.3]);
+ylabel ('Correlation:\newlinenoise-matched features');
+set(gca, 'XTick' , 1:length(modtxt), 'XTickLabel', modtxt);
+xlabel('Blur level')
+xlim([0.5, 4.5]);
+set(gca,'XColor', [0,0,0],'YColor', [0,0,0]);
+
+for layer = 1:length(DNNlayers)
+    subplot (8,2,18-2*layer); hold on;
+    set(gca, 'fontsize', 10,'fontname', 'Arial');
+    bar(feature_gain_submean(layer,2:length(modtxt)),'EdgeColor', 'none');
+    errorbar(feature_gain_submean(layer,2:length(modtxt)),...
+        feature_gain_subci(layer,2:length(modtxt)),'.k');
+    ylim([-0.1,0.3]);
+    if layer == 4
+        ylabel('Feature gain (\Deltar_{decode} - \Deltar_{noise})');
+    end
+    if layer == 1
+        set(gca, 'XTick' , 1:3, 'XTickLabel', modtxt(2:end));
+    end
+    colormap('gray');
+    set(gca,'XColor', [0,0,0],'YColor', [0,0,0]);
+end
+
+clear;
+rng('default');
+Subjects = {'Subject1', 'Subject2', 'Subject3', 'Subject4', 'Subject5'};
+DNNlayers = {'DNN1', 'DNN2', 'DNN3', 'DNN4', 'DNN5', 'DNN6', 'DNN7', 'DNN8'};
+feat_per_layer = 1000;
+addpath(genpath(fullfile(pwd,'lib')));
+workDir = pwd;
+dataFolder = fullfile(workDir,'data');
+
+fprintf('Loading Image Features\n');
+ImageFeatures = load(fullfile(dataFolder,'ImageFeatures.mat'), 'dataSet', 'metaData');
+trtest = get_dataset(ImageFeatures.dataSet, ImageFeatures.metaData, 'TrTest');
+imgcode_feat = get_dataset(ImageFeatures.dataSet, ImageFeatures.metaData, 'ImageCode');
+
+imgcode_feat = imgcode_feat(trtest == 2);
+
+for layer = 1:length(DNNlayers)
+    selectCond = ['DNN_layer = ', num2str(layer)];
+    image_features = select_feature(ImageFeatures.dataSet, ImageFeatures.metaData, selectCond);
+    image_features = image_features(trtest == 2, :);
+    for feat = 1:feat_per_layer
+        labels{layer, feat} = image_features(:,feat);
+    end
+    
+end
+
+for subject = 1:length(Subjects)
+    fprintf('Loading fMRI data from %s\n', Subjects{subject});
+    load(fullfile(dataFolder,Subjects{subject}), 'dataSet', 'metaData', 'RoiNames', 'SubjectName');
+    
+    Test(subject).subjectname = SubjectName;
+    
+    imgcode = get_dataset(dataSet, metaData, 'ImageCode');
+    modification = get_dataset(dataSet, metaData, 'Modification');
+    condition = get_dataset(dataSet, metaData, 'Condition');
+    correct = get_dataset(dataSet, metaData, 'Correct');
+    certain = get_dataset(dataSet, metaData, 'Certain');
+    category = get_dataset(dataSet, metaData, 'Category');
+    trtest = get_dataset(dataSet, metaData, 'TrTest');
+        
+    Test(subject).imgcode = imgcode(trtest == 2);
+    Test(subject).condition = condition(trtest == 2);
+    Test(subject).modification = modification(trtest == 2);
+    Test(subject).category = category(trtest == 2);
+    Test(subject).correct = correct(trtest == 2);
+    Test(subject).certain = certain(trtest == 2);
+    
+    for roi = 1:length(RoiNames)
+        selectCond = [RoiNames{roi} , '= 1'];
+        x = select_feature(dataSet, metaData, selectCond);
+        Test(subject).x{roi} = x(trtest == 2,:);
+    end
+    
+    imgcode_cat = Test(subject).category(logical(Test(subject).condition))*100 + ...
+        Test(subject).imgcode(logical(Test(subject).condition));
+    imgcode = [Test(subject).imgcode(~Test(subject).condition) ; ...
+        imgcode_cat];
+    
+    [~, ind] = sort(imgcode, 'ascend'); %feature imgcode is already sorted 
+    Test(subject).imgcode = Test(subject).imgcode(ind);
+    Test(subject).condition = Test(subject).condition(ind);
+    Test(subject).modification = Test(subject).modification(ind);
+    Test(subject).category = Test(subject).category(ind);
+    Test(subject).correct = Test(subject).correct(ind);
+    Test(subject).certain = Test(subject).certain(ind);
+    
+    for roi = 1:length(RoiNames)
+        Test(subject).x{roi} = Test(subject).x{roi}(ind,:);
+    end
+end
+
+param.numFeatures   = 500;
+param.Ntrain        = 20; 
+param.Nskip         = 20;   
+param.layercount    = 8;
+param.featurecount  = 1000;
+
+subroicomb = combvec(1:length(Subjects),1:length(RoiNames));
+subroicomb = subroicomb';
+for combsr = 1:size(subroicomb,1)
+    
+    modelnames{combsr} = ...
+        strcat(Subjects{subroicomb(combsr,1)}, '_', RoiNames{subroicomb(combsr,2)}, '.mat');
+
+    
+end
+
+setupdir(fullfile(workDir,'results'));
+for combsr = 1:size(subroicomb,1)
+    analysisName = modelnames{combsr};
+    fprintf('Feature decoding from %s started...\n', analysisName(1:end-4));
+    testvox = Test(subroicomb(combsr,1)).x{subroicomb(combsr,2)};
+    load(fullfile(workDir,'models', analysisName));
+    [predictedf, truef] = test_eachROI(model, testvox, labels, sigma4label, mu4label, sigma4feat, mu4feat, I4feat, param);
+
+    pred_feat{subroicomb(combsr,1),subroicomb(combsr,2)} = predictedf;
+    
+    fprintf('[Done] Feature decodeing from %s...\n', analysisName(1:end-4));
+        
+end
+true_feat =   truef;
+DateCreated = date;
+fprintf('Feature decodeing done!\n');
+fprintf('Saving...\n');
+save(fullfile(workDir,'results','Predicted_features.mat'),'pred_feat','true_feat',...
+    'Test', 'Subjects','DNNlayers','RoiNames','DateCreated', '-v7.3');
+fprintf('Done!\n');
+
+clear;
+rng('default');
+Subjects = {'Subject1', 'Subject2', 'Subject3', 'Subject4', 'Subject5'};
+DNNlayers = {'DNN1', 'DNN2', 'DNN3', 'DNN4', 'DNN5', 'DNN6', 'DNN7', 'DNN8'};
+feat_per_layer = 1000;
+addpath(genpath(fullfile(pwd,'lib')));
+workDir = pwd;
+lockDir = fullfile(workDir,'tmp');
+
+dataFolder = fullfile(workDir,'data');
+
+fprintf('Loading Image Features\n');
+ImageFeatures = load(fullfile(dataFolder,'ImageFeatures.mat'), 'dataSet', 'metaData');
+trtest = get_dataset(ImageFeatures.dataSet, ImageFeatures.metaData, 'TrTest');
+imgcode_feat = get_dataset(ImageFeatures.dataSet, ImageFeatures.metaData, 'ImageCode');
+
+imgcode_feat = imgcode_feat(trtest == 1);
+
+for layer = 1:length(DNNlayers)
+    selectCond = ['DNN_layer = ', num2str(layer)];
+    image_features = select_feature(ImageFeatures.dataSet, ImageFeatures.metaData, selectCond);
+    image_features = image_features(trtest == 1, :);
+    for feat = 1:feat_per_layer
+        labels{layer, feat} = image_features(:,feat);
+    end
+    
+end
+
+for subject = 1:length(Subjects)
+    % load fRMI data file
+    fprintf('Loading fMRI data from %s\n', Subjects{subject});
+    load(fullfile(dataFolder,Subjects{subject}), 'dataSet', 'metaData', 'RoiNames', 'SubjectName');
+    Train(subject).subjectname = SubjectName;
+    Test(subject).subjectname = SubjectName;
+    
+    imgcode = get_dataset(dataSet, metaData, 'ImageCode');
+    modification = get_dataset(dataSet, metaData, 'Modification');
+    condition = get_dataset(dataSet, metaData, 'Condition');
+    correct = get_dataset(dataSet, metaData, 'Correct');
+    certain = get_dataset(dataSet, metaData, 'Certain');
+    category = get_dataset(dataSet, metaData, 'Category');
+    trtest = get_dataset(dataSet, metaData, 'TrTest');
+    
+    Train(subject).imgcode = imgcode(trtest == 1);
+    
+    Test(subject).imgcode = imgcode(trtest == 2);
+    Test(subject).condition = condition(trtest == 2);
+    Test(subject).modification = modification(trtest == 2);
+    Test(subject).category = category(trtest == 2);
+    Test(subject).correct = correct(trtest == 2);
+    Test(subject).certain = certain(trtest == 2);
+    
+    for roi = 1:length(RoiNames)
+        selectCond = [RoiNames{roi} , '= 1'];
+        x = select_feature(dataSet, metaData, selectCond);
+        Train(subject).x{roi} = x(trtest == 1,:);
+        Test(subject).x{roi} = x(trtest == 2,:);
+    end
+    
+    [~, ind] = sort(Train(subject).imgcode, 'ascend'); %feature imgcode is already sorted from 1 to 1000
+    Train(subject).imgcode = Train(subject).imgcode(ind);
+    for roi = 1:length(RoiNames)
+        Train(subject).x{roi} = Train(subject).x{roi}(ind,:);
+    end
+end
+
+param.numFeatures   = 500; %number of voxels for each ROI
+param.Ntrain        = 200; % # of total training iteration (note that the number of iterations in the manuscript was 2000)
+param.Nskip         = 200;     % skip steps for display info
+param.layercount    = 8;    %number of layers
+param.featurecount  = 1000; %number of features per layer
+
+subroicomb = combvec(1:length(Subjects),1:length(RoiNames));
+subroicomb = subroicomb';
+for combsr = 1:size(subroicomb,1)
+    
+    modelnames{combsr} = ...
+        strcat(Subjects{subroicomb(combsr,1)}, '_', RoiNames{subroicomb(combsr,2)}, '.mat');
+
+    
+end
+
+model_exist = false(length(Subjects)*length(RoiNames),1);
+if exist(fullfile(workDir,'models'))
+    model_files = dir(fullfile(workDir,'models','*.mat'));
+    for fi = 1:length(model_files)
+        model_exist = model_exist | strcmp(model_files(fi).name,modelnames)';
+        fprintf('Decoder %s model already exists... Skipped\n', model_files(fi).name(1:end-4));
+    end
+else
+    mkdir(fullfile(workDir,'models'));
+end
+
+subroicomb(model_exist,:) = [];
+modelnames(model_exist) = [];
+
+for combsr = 1:size(subroicomb,1)
+    analysisName = modelnames{combsr};
+    % if model exists skip
+    if exist(fullfile(workDir,'models',analysisName))
+        fprintf('Decoder %s model already exists... Skipped\n', analysisName(1:end-4));
+        continue;
+    end
+    
+    if islocked(analysisName, lockDir)
+        fprintf('Decoder %s training is already running... Skipped\n', analysisName(1:end-4));
+        continue;
+    end
+    lockcomput(analysisName, lockDir);
+    fprintf('Decoder %s training started\n', analysisName(1:end-4));
+    trainingvox = Train(subroicomb(combsr,1)).x{subroicomb(combsr,2)};
+    [model, sigma4label, mu4label, sigma4feat, mu4feat, I4feat] = train_eachROI(labels,trainingvox,param);
+    
+    save(fullfile(workDir,'models',modelnames{combsr}),'model','sigma4label','mu4label','sigma4feat','mu4feat','I4feat', '-v7.3');
+    fprintf('Decoder %s training finished\n', analysisName(1:end-4));
+    unlockcomput(analysisName, lockDir);
+end
+fprintf('Decoders training finished!\n');
