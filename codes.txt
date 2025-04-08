@@ -310,7 +310,7 @@ end
 clear;
 rng('default');
 workDir = pwd;
-noisestep = -0.1; %to adjust resolution of noise matching
+noisestep = -0.1;
 features_file = 'Predicted_features.mat';
 Subjects = {'Subject1', 'Subject2', 'Subject3', 'Subject4', 'Subject5'};
 DNNlayers = {'DNN1', 'DNN2', 'DNN3', 'DNN4', 'DNN5', 'DNN6', 'DNN7', 'DNN8'};
